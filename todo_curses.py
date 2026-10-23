@@ -18,6 +18,7 @@ Controls:
     Ctrl+K      Delete from cursor to end of line
     Ctrl+D      Delete selected todo
     Alt+Left/Right  Switch lists (F5/F6 also work)
+    Alt+Up/Down     Move selected todo up/down within its list
     F2/F3       Create/rename list
     F4          Move selected todo to another list
     F8          Delete the current empty list
@@ -274,8 +275,10 @@ class TodoApp:
                 following = self.stdscr.get_wch()
             except curses.error:
                 return key
-            if following in (curses.KEY_LEFT, curses.KEY_RIGHT):
-                return "alt-left" if following == curses.KEY_LEFT else "alt-right"
+            arrows = {curses.KEY_LEFT: "alt-left", curses.KEY_RIGHT: "alt-right",
+                      curses.KEY_UP: "alt-up", curses.KEY_DOWN: "alt-down"}
+            if following in arrows:
+                return arrows[following]
             sequence = str(following)
             if sequence in ("[", "O"):
                 for _ in range(12):
@@ -290,6 +293,10 @@ class TodoApp:
                     return "alt-left"
                 if sequence in ("[C", "[1;3C", "OC"):
                     return "alt-right"
+                if sequence in ("[A", "[1;3A", "OA"):
+                    return "alt-up"
+                if sequence in ("[B", "[1;3B", "OB"):
+                    return "alt-down"
             return None
         finally:
             self.stdscr.timeout(-1)
@@ -356,7 +363,7 @@ class TodoApp:
                     self.dialog_cursor -= 1
             elif key == curses.KEY_DC:
                 self.dialog_text = self.dialog_text[:self.dialog_cursor] + self.dialog_text[self.dialog_cursor + 1:]
-            elif isinstance(key, str) and key.isprintable() and len(self.dialog_text) < 40:
+            elif isinstance(key, str) and len(key) == 1 and key.isprintable() and len(self.dialog_text) < 40:
                 self.dialog_text = self.dialog_text[:self.dialog_cursor] + key + self.dialog_text[self.dialog_cursor:]
                 self.dialog_cursor += len(key)
         if key not in ("\n", "\r", curses.KEY_ENTER):
@@ -431,6 +438,12 @@ class TodoApp:
             return True
         if self.dialog:
             self._handle_dialog(key)
+            return False
+        if key in ("alt-up", getattr(curses, "ALT_UP", -102)):
+            self._reorder_selected(-1)
+            return False
+        if key in ("alt-down", getattr(curses, "ALT_DOWN", -103)):
+            self._reorder_selected(1)
             return False
         if key in ("alt-left", getattr(curses, "ALT_LEFT", -100), curses.KEY_F5):
             self._cycle_list(-1)
@@ -538,6 +551,20 @@ class TodoApp:
         self.selected = max(0, min(len(self.items) - 1, current + delta))
         self.cursor_col = len(self.items[self.selected].text)
         self._keep_selection_visible()
+
+    def _reorder_selected(self, delta: int) -> None:
+        if self._selected_item() is None:
+            self.message = "No todo selected. Press Enter to create one."
+            return
+        target = self.selected + delta
+        if not 0 <= target < len(self.items):
+            self.message = "Already at the top of this list." if delta < 0 else "Already at the bottom of this list."
+            return
+        self.items[self.selected], self.items[target] = self.items[target], self.items[self.selected]
+        self.selected = target
+        self.store.update_positions(self.items)
+        self._keep_selection_visible()
+        self.message = "Moved todo up." if delta < 0 else "Moved todo down."
 
     def _move_cursor(self, delta: int) -> None:
         item = self._selected_item()
@@ -671,7 +698,7 @@ class TodoApp:
         self._safe_addstr(
             1,
             0,
-            "Enter: New | Arrow Keys: Navigate | Tab: Toggle | Ctrl+D: Delete | Esc/Ctrl+Q: Exit",
+            "Enter: New | Arrows: Navigate | Alt+Up/Down: Reorder | Tab: Toggle | Ctrl+D: Delete | Esc/Ctrl+Q: Exit",
             curses.color_pair(self.help_pair),
         )
         self._safe_addstr(2, 0,

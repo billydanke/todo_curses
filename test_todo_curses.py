@@ -180,11 +180,80 @@ class ListsTest(unittest.TestCase):
         self.assertEqual(app.list_id, work_id)
         for sequence, expected in [(["\x1b", "[", "1", ";", "3", "D"], "alt-left"),
                                    (["\x1b", curses.KEY_RIGHT], "alt-right"),
+                                   (["\x1b", curses.KEY_UP], "alt-up"),
+                                   (["\x1b", curses.KEY_DOWN], "alt-down"),
+                                   (list("\x1b[1;3A"), "alt-up"),
+                                   (list("\x1b[1;3B"), "alt-down"),
+                                   (list("\x1b[A"), "alt-up"),
+                                   (list("\x1b[B"), "alt-down"),
+                                   (list("\x1bOA"), "alt-up"),
+                                   (list("\x1bOB"), "alt-down"),
                                    (["\x1b"], "\x1b"), (["\x1b", "z"], None)]:
             app.stdscr = Screen(sequence)
             self.assertEqual(app._read_key(), expected)
             self.assertEqual(app.stdscr.timeouts[-1], -1)
         self.assertTrue(app._handle_key("\x1b"))
+
+    def test_reorder_preserves_item_and_other_list_and_persists(self):
+        app = self.app()
+        other = self.store.create_list("Other")
+        other_item = self.store.insert(0, "Other list task", list_id=other.id)
+        for text in ("First", "Second", "Third"):
+            app._insert_below_selection()
+            app._insert_text(text)
+        app._toggle_status()
+        selected_id = app._selected_item().id
+        app.cursor_col = 2
+        app._handle_key(getattr(curses, "ALT_UP", "alt-up"))
+        self.assertEqual([i.text for i in app.items], ["First", "Third", "Second"])
+        self.assertEqual(app.selected, 1)
+        self.assertEqual(app._selected_item().id, selected_id)
+        self.assertTrue(app._selected_item().completed)
+        self.assertEqual(app.cursor_col, 2)
+        app._handle_key(getattr(curses, "ALT_DOWN", "alt-down"))
+        app._handle_key("alt-up")
+        self.store.close()
+        store = self.open_store()
+        self.assertEqual([i.text for i in store.load(app.list_id)], ["First", "Third", "Second"])
+        self.assertEqual([i.position for i in store.load(app.list_id)], [0, 1, 2])
+        self.assertEqual(store.load(other.id), [other_item])
+
+    def test_reorder_boundaries_and_dialogs_do_not_change_items(self):
+        app = self.app()
+        app._handle_key("alt-up")
+        app._handle_key("alt-down")
+        self.assertEqual(app.items, [])
+        self.assertIsNone(app.selected)
+        app._insert_text("Only task")
+        for key in ("alt-up", "alt-down"):
+            with patch.object(self.store, "update_positions") as save:
+                app._handle_key(key)
+                save.assert_not_called()
+            self.assertEqual(app.selected, 0)
+        app._insert_below_selection()
+        app._insert_text("Second task")
+        app._open_dialog("rename")
+        original_name = app.dialog_text
+        app._handle_key("alt-up")
+        self.assertEqual([i.text for i in app.items], ["Only task", "Second task"])
+        self.assertEqual(app.dialog, "rename")
+        self.assertEqual(app.dialog_text, original_name)
+
+    def test_reorder_scroll_follows_selected_item(self):
+        app = self.app()
+        for index in range(25):
+            app._insert_below_selection()
+            app._insert_text(str(index))
+        app.selected = app.scroll_top = 5
+        selected_id = app._selected_item().id
+        app._handle_key("alt-up")
+        self.assertEqual((app.selected, app.scroll_top), (4, 4))
+        self.assertEqual(app._selected_item().id, selected_id)
+        for _ in range(20):
+            app._handle_key("alt-down")
+        self.assertEqual(app.selected, 24)
+        self.assertEqual(app._selected_item().id, selected_id)
+        self.assertLess(app.selected, app.scroll_top + app._visible_height())
 
     def test_footer_and_dialog_rendering_at_narrow_widths(self):
         app = self.app()
